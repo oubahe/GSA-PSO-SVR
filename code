@@ -1,0 +1,350 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import matplotlib.pyplot as plt
+from sklearn.svm import SVR
+from sklearn.preprocessing import StandardScaler
+import random
+from  sklearn.grid_search import GridSearchCV
+from sklearn.preprocessing import StandardScaler
+import seaborn as sns
+import threading
+
+################################### 数据读取与预处理 ###############################################
+data = pd.read_excel('modeling_data.xlsx',sheetname='Area1_Load')
+features=pd.read_excel('modeling_data.xlsx',sheetname='Area1_Weather')
+## features前向填充缺失值
+features=features.fillna(method='ffill',axis=1)
+print(features.describe())
+## 数据标准化
+scaler_fea=StandardScaler()
+scaler_load=StandardScaler()
+## 选取历史负荷起始时间
+start=features.index[0]
+## 筛选具有特征的负荷
+data=data[data['YMD']>=start]
+## 删除预测填充空值部分
+data=data.dropna(how='any',axis=0)
+## 选取历史负荷终止时间
+end=data.iloc[-1,0]
+## 创建时间-负荷Dataframe
+load=pd.DataFrame()
+info=np.array(data.iloc[:,1:])
+## 求和获取日负荷值
+load_data=info.sum(axis=1)
+load_data=np.reshape(load_data,(-1,1))
+## 时间负荷Dataframe填充数据
+load['time']=data['YMD']
+load['daily_load']=load_data
+# 负荷趋势图
+# x_axis=[i for i in range(len(load['time']))]
+# plt.scatter(x_axis,load['daily_load'])
+# plt.show()
+
+######################################## 分析数据关系 ##############################################
+# trainset=features[features.index<=end].copy()
+# trainset['d_load']=load_data
+# trainset.columns=['year','month','week','H_tem','L_tem','Avg_tem','Hum','Pre','d_load']
+# year
+# 每一年的变化趋势
+# year2012=trainset.loc[trainset['year']==2012,['d_load']]
+# year2013=trainset.loc[trainset['year']==2013,['d_load']]
+# year2014=trainset.loc[trainset['year']==2014,['d_load']]
+# plt.subplot(311)
+# plt.plot([i for i in range(len(year2012))],year2012,'-*g',label='year 2012')
+# plt.subplot(312)
+# plt.plot([i for i in range(len(year2013))],year2013,'-*b',label='year 2013')
+# plt.subplot(313)
+# plt.plot([i for i in range(len(year2014))],year2014,'-*k',label='year 2014')
+# # 年均日负荷
+# year_avg_load=trainset[['year','d_load']].groupby('year').mean()
+# year_avg_load.plot.bar()
+# plt.title('year-avg_d_load')
+# plt.xlabel('year')
+# plt.ylabel('load')
+
+# month
+# year2012=trainset.loc[trainset['year']==2012,['d_load','month']]
+# for i in range(1,13):
+#     month=year2012.loc[year2012['month']==i,['d_load']]
+#     plt.figure()
+#     plt.plot([j for j in range(len(month))],month)
+#     plt.show()
+# # 月均日负荷
+# month_avg_load=trainset[['month','d_load','year']].groupby(['year','month']).mean()
+# month_avg_load.plot.bar()
+# plt.title('month-avg_d_load')
+# plt.xlabel('month')
+# plt.ylabel('load')
+
+# week
+# trainset[['week','d_load']].groupby('week').mean().plot.bar()
+
+# 平均温度(明显正相关)
+# trainset['Avg_tem_cut']=pd.qcut(trainset['Avg_tem'],3)
+# trainset['Avg_tem_cut']=pd.factorize(trainset['Avg_tem_cut'])[0]
+# trainset[['Avg_tem_cut','d_load']].groupby('Avg_tem_cut').mean().plot.bar()
+
+# 相对湿度（无太大影响）
+# trainset.describe()
+# trainset['Hum_cut']=pd.qcut(trainset['Hum'],6)
+# trainset['Hum_cut']=pd.factorize(trainset['Hum_cut'])[0]
+# trainset[['Hum_cut','d_load']].groupby('Hum_cut').mean().plot.bar()
+
+# 降水量(无太大影响)
+# print(trainset.describe())
+# pre_cut=[]
+# for pre in trainset['Pre']:
+#     if pre<=1:
+#         pre_cut.append(0)
+#     elif pre<=50:
+#         pre_cut.append(1)
+#     else:
+#         pre_cut.append(2)
+# trainset['Pre_cut']=pre_cut
+# trainset[['Pre_cut','d_load']].groupby('Pre_cut').mean().plot.bar()
+
+############################################# 特征工程与特征处理 ###########################################
+# 加入年份\月份\星期属性
+year=[];month=[];week=[];time=list(features.index)
+for i in range(len(time)):
+    t=str(time[i])
+    t_year=t[:4]
+    t_month=t[-4:-2]
+    ## 对星期属性进行处理
+    t_week=datetime.strptime(t,'%Y%m%d').weekday()+1
+    if t_week==6:
+        t_week=10
+    if t_week==7:
+        t_week=15
+    year.append(int(t_year))
+    month.append(int(t_month))
+    week.append(t_week)
+features.insert(0,'年份',year)
+features.insert(1,'月份',month)
+# 加入星期属性
+features.insert(2,'星期',week)
+features.columns=['year','month','week','H_tem','L_tem','Avg_tem','Hum','Pre']
+# 根据特征分析将降水量分为3类
+for i in range(len(features['Pre'])):
+    if features.iloc[i,-1]<=10:
+        features.iloc[i, -1]=0
+    elif features.iloc[i,-1]>=50:
+        features.iloc[i, -1] = 5
+    else:
+        features.iloc[i,-1]=2
+# 只对不包含（年份、月份\星期类型和最后一列降水量）的数据标准化
+features=np.array(features)
+features[:,3:-1]=scaler_fea.fit_transform(features[:,3:-1])
+all_load=np.reshape(np.array(load['daily_load']),(-1,1))
+all_load=scaler_load.fit_transform(all_load)
+# 选取预测输入并标准化
+# features[:,2:-1]=(features[:,2:-1]-scaler_fea.mean_)/np.sqrt(scaler_fea.var_)
+# 选取历史与预测的输入输出
+pre_day=10
+begin=len(load_data)-pre_day
+over=len(load_data)
+his_x=features[:begin,:]
+his_load=all_load[:begin,:]
+print(his_x.shape)
+pre_x=features[begin:over,:]
+# pre_load=np.zeros((pre_x.shape[0],1))
+actual_load=load_data[-pre_day:,:]
+print(pre_x.shape)
+# 数据预处理后保存至本地csv文件
+csv=np.concatenate((features[:over,:],load_data),axis=1)
+csv=pd.DataFrame(csv)
+csv.columns=['year','month','week','H_tem','L_tem','Avg_tem','Hum','Pre','Daily_load']
+csv.to_csv('modeling_load.csv',index=None)
+
+##################################### 特征属性可视化分析 #######################################
+# 互信息权重分析
+from sklearn.feature_selection import mutual_info_regression
+from sklearn.feature_selection import SelectKBest
+model=SelectKBest(mutual_info_regression,k=8) # 删除互信息最小的因子
+#输出互信息的大小
+his_x=model.fit_transform(his_x,his_load)
+weight=list(model.scores_)
+
+# pearson相关系数分析
+import seaborn as sns
+correlation=csv.copy()
+correlation=correlation.astype(float)
+corr=correlation.corr()
+# sns.heatmap(corr,annot=True)
+
+
+############################################ 模型融合与测试 ########################################
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import AdaBoostRegressor
+from sklearn.ensemble import GradientBoostingRegressor
+
+feature_names=corr.columns[:-1]
+print(type(feature_names))
+# RFR
+rf_param={'n_estimators':[50,60,70,80,90,100],'min_samples_split':[3,4,5],'min_samples_leaf':[2,3,4],'max_depth':[4]}
+rf=RandomForestRegressor()
+rf_grid=GridSearchCV(rf,param_grid=rf_param,scoring='neg_mean_squared_error')
+rf_grid.fit(his_x,his_load)
+rf_importance=rf_grid.best_estimator_.feature_importances_
+rf_importance=list(sorted(zip(rf_importance,feature_names),reverse=True))[:-1]
+rf_feature=[i[1] for i in rf_importance]
+rf_best_param=rf_grid.best_params_
+
+# ADB
+adb_param={'n_estimators':[i for i in range(80,200,10)],'learning_rate':list(np.linspace(0.01,1,10))}
+adb=AdaBoostRegressor(loss='square')
+adb_grid=GridSearchCV(adb,param_grid=adb_param,scoring='neg_mean_squared_error')
+adb_grid.fit(his_x,his_load)
+adb_importance=adb_grid.best_estimator_.feature_importances_
+adb_importance=list(sorted(zip(adb_importance,feature_names),reverse=True))[:-1]
+adb_feature=[i[1] for i in adb_importance]
+adb_best_param=adb_grid.best_params_
+
+# GBR
+gbr=GradientBoostingRegressor(loss='ls')
+gbr_param={'n_estimators':[i for i in range(100,200,10)],'max_features':[3,4,5,6],
+           'learning_rate':list(np.linspace(0.01,1,10)),'min_samples_split':[2,3,4,5],
+           'min_samples_leaf':[2,3,4,5]}
+gbr_grid=GridSearchCV(gbr,param_grid=gbr_param,scoring='neg_mean_squared_error')
+gbr_grid.fit(his_x,his_load)
+gbr_importance=gbr_grid.best_estimator_.feature_importances_
+gbr_importance=list(sorted(zip(gbr_importance,feature_names),reverse=True))[:-1]
+gbr_feature=[i[1] for i in gbr_importance]
+gbr_best_param=gbr_grid.best_params_
+
+# 特征融合与选择、
+final_features=list(set(rf_feature+adb_feature+gbr_feature))
+his_x,pre_x=pd.DataFrame(his_x),pd.DataFrame(pre_x)
+his_x.columns=['year','month','week','H_tem','L_tem','Avg_tem','Hum','Pre']
+pre_x.columns=['year','month','week','H_tem','L_tem','Avg_tem','Hum','Pre']
+out_features=[item for item in list(his_x.columns) if item not in final_features]
+del his_x[out_features[0]]; del pre_x[out_features[0]]
+his_x,pre_x=np.array(his_x),np.array(pre_x)
+
+
+
+############################################ GSA-CV-SVR #############################################
+svr=SVR(kernel='rbf')
+C_value=list(np.linspace(0.1,10,20))
+gamma_value=list(np.linspace(0.1,5,20))
+svr_param={'C':C_value,'gamma':gamma_value}
+svr_grid=GridSearchCV(svr,param_grid=svr_param,cv=10)
+svr_grid.fit(his_x,his_load)
+# 属性输出
+grid_scores=[score[1] for score in svr_grid.grid_scores_]
+best_param=svr_grid.best_params_
+best_score=svr_grid.best_score_
+print(best_param,best_score)
+best_C=best_param['C']
+best_gamma=best_param['gamma']
+# 得到全局最佳参数的回归器
+# Advanced_svr=SVR(kernel='rbf',C=best_C,gamma=best_gamma)
+# Advanced_svr.fit(his_x,his_load)
+# Advanced_svr_load=Advanced_svr.predict(pre_x)
+# Advanced_svr_load=scaler_load.inverse_transform(Advanced_svr_load)
+# print(Advanced_svr_load,actual_load)
+# Advanced_svr_load=np.reshape(Advanced_svr_load,(-1,1))
+# pre_result=np.concatenate((Advanced_svr_load,actual_load),axis=1)
+
+## 等高线图确定全局最优范围
+def contourmap(C,gamma,grid_scores):
+    x=np.array(C)
+    y=np.array(gamma)
+    gs=[k for k in grid_scores]
+    scores=[];score=[]
+    for index, value in enumerate(gs):
+        if index > 0 and index % (len(x)) == 0:
+            scores.append(score)
+            score=[]
+        score.append(value)
+        if index==(len(gs)-1):
+            scores.append(score)
+    X,Y=np.meshgrid(x,y)
+    plt.contourf(X,Y,scores,10,alpha=0.5,cmap=plt.cm.hot)
+    C=plt.contour(X,Y,scores,10,colors='blue',linewidth=0.5)
+    plt.clabel(C,fontsize=20)
+    plt.xlabel('C')
+    plt.ylabel('gamma')
+    plt.title('The contour map of SVR parameters')
+    plt.show()
+# 绘制等高线图
+# contourmap(C_value,gamma_value,grid_scores)
+
+# PSO参数优化
+class PSO(object):
+    def __init__(self, population_size, max_steps):
+        self.w=0.6  # 惯性权重
+        self.c1=self.c2 = 2
+        self.population_size=population_size  # 粒子群数量
+        self.dim=2  # 搜索空间的维度
+        self.max_steps=max_steps  # 迭代次数
+        self.x_bound=[0.1,5]  # 解空间范围
+        self.x=np.random.uniform(self.x_bound[0], self.x_bound[1],
+                                (self.population_size, self.dim))  # 初始化粒子群位置
+        self.v=np.random.rand(self.population_size, self.dim)  # 初始化粒子群速度
+        fitness,best_param=self.calculate_fitness(self.x)
+        self.p=self.x # 个体的最佳位置
+        self.param=best_param # 记录个体最佳参数
+        self.individual_best_fitness=fitness  # 个体的最优适应度
+        self.fitness_score=[]
+    ###定义目标损失函数
+    def calculate_fitness(self,x):
+        param_grid={'C':list(abs(x[:,0])),'gamma':list(abs(x[:,1]))}
+        svr=GridSearchCV(SVR(kernel='rbf'),param_grid,cv=5)
+        svr.fit(his_x,his_load)
+        grid_scores=svr.best_score_
+        best_param=svr.best_params_
+        return grid_scores,best_param
+
+    def evolve(self):
+        fig = plt.figure()
+        for step in range(self.max_steps):
+            r1=np.random.rand(self.population_size,self.dim)
+            r2=np.random.rand(self.population_size,self.dim)
+            # 更新速度和权重
+            self.v=self.w*self.v+self.c1*r1*(self.p-self.x)
+            self.x=self.v+self.x
+            # 粒子变化散点图
+            plt.clf()
+            plt.scatter(self.x[:, 0],self.x[:, 1],s=30,color='k')
+            plt.xlabel('Parameter C')
+            plt.ylabel('Parameter gamma')
+            plt.title('Particle motion scatter plot')
+            plt.xlim(self.x_bound[0],self.x_bound[1])
+            plt.ylim(self.x_bound[0],self.x_bound[1])
+            plt.show()
+            plt.pause(0.01)
+            fitness,best_param=self.calculate_fitness(self.x)
+            # 需要更新的个体
+            if fitness<self.individual_best_fitness:
+                self.p=self.x
+                self.param=best_param
+                self.individual_best_fitness=fitness
+            self.fitness_score.append(self.individual_best_fitness)
+        # 绘制迭代次数与适应度误差相关曲线
+        x_axis=[i for i in range(self.max_steps)]
+        plt.figure(figsize=(15,9))
+        plt.plot(x_axis,self.fitness_score,'-^b')
+        plt.xlabel('Iterative number')
+        plt.ylabel('Fitness value')
+        plt.title('Iterative error plot')
+        plt.grid()
+        plt.show()
+        return self.param,self.individual_best_fitness
+# 对象实现局部搜索
+# def main():
+# 等高线图粗略选择
+contourmap(C_value, gamma_value, grid_scores)
+# PSO参数选取
+my_pso=PSO(20,15)
+local_best_param,best_score=my_pso.evolve()
+local_best_C,local_best_gamma=local_best_param['C'],local_best_param['gamma']
+# 得到局部最佳参数的回归器
+Advanced_svr=SVR(kernel='rbf',C=local_best_C,gamma=local_best_gamma)
+Advanced_svr.fit(his_x,his_load)
+Advanced_svr_load=Advanced_svr.predict(pre_x)
+Advanced_svr_load=scaler_load.inverse_transform(Advanced_svr_load)
+Advanced_svr_load=np.reshape(Advanced_svr_load,(-1,1))
+pre_result=np.concatenate((Advanced_svr_load,actual_load),axis=1)
+print(pre_result)
